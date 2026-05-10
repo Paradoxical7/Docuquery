@@ -1,6 +1,6 @@
 import os
 import fitz
-import chromadb
+import numpy as np
 from flask import Flask, request, jsonify, render_template
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -13,8 +13,8 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs('uploads', exist_ok=True)
 
-chroma_client = chromadb.Client()
-collection = None
+# Simple in-memory store instead of ChromaDB
+chunks_store = []
 
 def extract_text_from_pdf(pdf_path):
     doc = fitz.open(pdf_path)
@@ -30,13 +30,24 @@ def chunk_text(text, chunk_size=500):
         chunks.append(" ".join(words[i:i+chunk_size]))
     return chunks
 
+def get_embedding(text):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+def cosine_similarity(a, b):
+    a, b = np.array(a), np.array(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    global collection
+    global chunks_store
     if 'file' not in request.files:
         return jsonify({'success': False})
     file = request.files['file']
@@ -45,26 +56,29 @@ def upload():
     filename = secure_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
-    try:
-        chroma_client.delete_collection("docs")
-    except:
-        pass
-    collection = chroma_client.get_or_create_collection(name="docs")
     text = extract_text_from_pdf(filepath)
     chunks = chunk_text(text)
-    for i, chunk in enumerate(chunks):
-        collection.add(documents=[chunk], ids=[f"chunk_{i}"])
+    chunks_store = []
+    for chunk in chunks:
+        embedding = get_embedding(chunk)
+        chunks_store.append({'text': chunk, 'embedding': embedding})
     return jsonify({'success': True, 'chunks': len(chunks)})
 
 @app.route('/ask', methods=['POST'])
 def ask():
-    global collection
-    if collection is None:
+    global chunks_store
+    if not chunks_store:
         return jsonify({'answer': 'Please upload a PDF first.'})
     data = request.get_json()
     question = data.get('question', '')
-    results = collection.query(query_texts=[question], n_results=3)
-    context = " ".join(results["documents"][0])
+    question_embedding = get_embedding(question)
+    similarities = []
+    for chunk in chunks_store:
+        sim = cosine_similarity(question_embedding, chunk['embedding'])
+        similarities.append((sim, chunk['text']))
+    similarities.sort(reverse=True)
+    top_chunks = [text for _, text in similarities[:3]]
+    context = " ".join(top_chunks)
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
