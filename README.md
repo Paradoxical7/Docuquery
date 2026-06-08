@@ -24,3 +24,7 @@ Upload any PDF and ask questions about it in plain English. DocuQuery uses RAG (
 ## Setup
 1. Clone the repo
 2. Create a virtual environment and install dependencies
+
+## 
+
+Live Link - https://docuquery-c4ic.onrender.com/
